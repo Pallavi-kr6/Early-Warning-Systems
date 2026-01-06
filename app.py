@@ -12,13 +12,19 @@ from fpdf import FPDF
 app = Flask(__name__)
 
 # Load models and scalers
-
-heat_model = tf.keras.models.load_model('models/heatwave_prediction_model.h5')
-earthquake_model = tf.keras.models.load_model('models/earthquake_prediction_model.h5')
-flood_model = tf.keras.models.load_model('models/flood_prediction_model.h5')
-flood_scaler = joblib.load('models/flood_scaler.pkl')
-heat_scaler = joblib.load('models/heat_scaler.pkl')
-earthquake_scaler = joblib.load('models/earthquake_scaler.pkl')
+try:
+    heat_model = tf.keras.models.load_model('models/heatwave_prediction_model.h5')
+    earthquake_model = tf.keras.models.load_model('models/earthquake_prediction_model.h5')
+    flood_model = tf.keras.models.load_model('models/flood_prediction_model.h5')
+    flood_scaler = joblib.load('models/flood_scaler.pkl')
+    heat_scaler = joblib.load('models/heat_scaler.pkl')
+    earthquake_scaler = joblib.load('models/earthquake_scaler.pkl')
+    models_loaded = True
+except Exception as e:
+    print(f"Error loading models: {e}")
+    heat_model = earthquake_model = flood_model = None
+    flood_scaler = heat_scaler = earthquake_scaler = None
+    models_loaded = False
 
 # Load city coordinates and helplines
 with open('data/city_coordinates.json') as f:
@@ -246,6 +252,9 @@ def home():
 # Prediction endpoint with earthquake support
 @app.route('/predict', methods=['POST'])
 def predict():
+    if not models_loaded:
+        return "Models could not be loaded due to compatibility issues. Please retrain the models with the current TensorFlow version."
+    
     # Get form data
     disaster_type = request.form['disaster']
     city = request.form['city']
