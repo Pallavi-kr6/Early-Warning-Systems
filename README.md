@@ -74,3 +74,4 @@ PDF Gen	reportlab / fpdf
  * 📱 Community safety dashboards
 
  * 📄 Automatic PDF-based email alerts (can be integrated
+# Early-Warning-Systems
