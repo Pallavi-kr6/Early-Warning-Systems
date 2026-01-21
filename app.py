@@ -1,6 +1,5 @@
 from flask import Flask, render_template, request, send_file
 import numpy as np
-import tensorflow as tf
 import joblib
 import json
 import os
@@ -9,22 +8,39 @@ import requests
 import tempfile
 from fpdf import FPDF
 
+# Try to import TensorFlow
+try:
+    import tensorflow as tf
+    TENSORFLOW_AVAILABLE = True
+except ImportError:
+    TENSORFLOW_AVAILABLE = False
+    print("WARNING: TensorFlow is not installed.")
+    print("   The application will run but predictions will not work.")
+    print("   Please install Python 3.11 or 3.12 and TensorFlow.")
+    print("   See TENSORFLOW_SETUP.md for instructions.")
+
 app = Flask(__name__)
 
 # Load models and scalers
-try:
-    heat_model = tf.keras.models.load_model('models/heatwave_prediction_model.h5')
-    earthquake_model = tf.keras.models.load_model('models/earthquake_prediction_model.h5')
-    flood_model = tf.keras.models.load_model('models/flood_prediction_model.h5')
-    flood_scaler = joblib.load('models/flood_scaler.pkl')
-    heat_scaler = joblib.load('models/heat_scaler.pkl')
-    earthquake_scaler = joblib.load('models/earthquake_scaler.pkl')
-    models_loaded = True
-except Exception as e:
-    print(f"Error loading models: {e}")
-    heat_model = earthquake_model = flood_model = None
-    flood_scaler = heat_scaler = earthquake_scaler = None
-    models_loaded = False
+models_loaded = False
+heat_model = earthquake_model = flood_model = None
+flood_scaler = heat_scaler = earthquake_scaler = None
+
+if TENSORFLOW_AVAILABLE:
+    try:
+        heat_model = tf.keras.models.load_model('models/heatwave_prediction_model.h5')
+        earthquake_model = tf.keras.models.load_model('models/earthquake_prediction_model.h5')
+        flood_model = tf.keras.models.load_model('models/flood_prediction_model.h5')
+        flood_scaler = joblib.load('models/flood_scaler.pkl')
+        heat_scaler = joblib.load('models/heat_scaler.pkl')
+        earthquake_scaler = joblib.load('models/earthquake_scaler.pkl')
+        models_loaded = True
+        print("SUCCESS: Models loaded successfully")
+    except Exception as e:
+        print(f"ERROR: Error loading models: {e}")
+        models_loaded = False
+else:
+    print("WARNING: TensorFlow not available - models cannot be loaded")
 
 # Load city coordinates and helplines
 with open('data/city_coordinates.json') as f:
@@ -252,8 +268,31 @@ def home():
 # Prediction endpoint with earthquake support
 @app.route('/predict', methods=['POST'])
 def predict():
+    if not TENSORFLOW_AVAILABLE:
+        return render_template('result.html', 
+                              error=True,
+                              error_message="TensorFlow is not installed. Please install Python 3.11 or 3.12 and TensorFlow. See TENSORFLOW_SETUP.md for instructions.",
+                              disaster_type=request.form.get('disaster', 'Unknown').title(),
+                              city=request.form.get('city', 'Unknown'),
+                              risk_detected=False,
+                              prediction=0.0,
+                              alerts=None,
+                              severity=None,
+                              pdf_path=None,
+                              input_data={})
+    
     if not models_loaded:
-        return "Models could not be loaded due to compatibility issues. Please retrain the models with the current TensorFlow version."
+        return render_template('result.html',
+                              error=True,
+                              error_message="Models could not be loaded. Please check that all model files exist in the models/ directory.",
+                              disaster_type=request.form.get('disaster', 'Unknown').title(),
+                              city=request.form.get('city', 'Unknown'),
+                              risk_detected=False,
+                              prediction=0.0,
+                              alerts=None,
+                              severity=None,
+                              pdf_path=None,
+                              input_data={})
     
     # Get form data
     disaster_type = request.form['disaster']
