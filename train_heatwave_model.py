@@ -85,30 +85,23 @@ def preprocess_data(df):
     feature_cols = ['max_temperature', 'max_humidity', 'min_temperature']
     target_col = 'heatwave'
     
+    print(f"\nAvailable columns: {df.columns.tolist()}")
+    print(f"Using features: {feature_cols}")
+    print(f"Using target: {target_col}")
+    
     if not all(col in df.columns for col in feature_cols):
-        print("\nAvailable columns:", df.columns.tolist())
-        print("\nUsing alternative temperature-based features...")
-        # Try to find temperature-related columns
-        temp_cols = [col for col in df.columns if 'temp' in col.lower()]
-        humid_cols = [col for col in df.columns if 'humid' in col.lower()]
-        
-        if len(temp_cols) >= 2 and len(humid_cols) >= 1:
-            feature_cols = temp_cols[:2] + humid_cols[:1]
-        else:
-            feature_cols = ['max_temperature', 'min_temperature', 'dew_point']
+        print("\n✗ Error: Required columns not found!")
+        raise ValueError(f"Missing columns. Expected {feature_cols}, but got {df.columns.tolist()}")
     
     if target_col not in df.columns:
-        print("\nAvailable columns:", df.columns.tolist())
-        raise ValueError("Target column 'heatwave' not found")
-    
-    print(f"\nIdentified features: {feature_cols}")
-    print(f"Identified target: {target_col}")
+        print("\n✗ Error: Target column not found!")
+        raise ValueError(f"Target column '{target_col}' not found in dataset")
     
     # Extract features and target
     X = df[feature_cols].values
     y = df[target_col].values
     
-    # Convert target to binary if needed
+    # Convert target to binary if needed (0 or 1)
     if y.max() > 1:
         y = (y > y.mean()).astype(int)
     

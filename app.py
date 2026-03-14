@@ -7,17 +7,9 @@ import datetime
 import requests
 import tempfile
 from fpdf import FPDF
-
-# Try to import TensorFlow
-try:
-    import tensorflow as tf
-    TENSORFLOW_AVAILABLE = True
-except ImportError:
-    TENSORFLOW_AVAILABLE = False
-    print("WARNING: TensorFlow is not installed.")
-    print("   The application will run but predictions will not work.")
-    print("   Please install Python 3.11 or 3.12 and TensorFlow.")
-    print("   See TENSORFLOW_SETUP.md for instructions.")
+from validation import validate_flood_inputs, validate_earthquake_inputs, validate_heatwave_inputs
+from features import engineer_flood_features, engineer_earthquake_features, engineer_heatwave_features
+from risk_scoring import calculate_flood_risk, calculate_earthquake_risk, calculate_heatwave_risk
 
 app = Flask(__name__)
 
@@ -26,26 +18,23 @@ models_loaded = False
 heat_model = earthquake_model = flood_model = None
 flood_scaler = heat_scaler = earthquake_scaler = None
 
-if TENSORFLOW_AVAILABLE:
-    try:
-        heat_model = tf.keras.models.load_model('models/heatwave_prediction_model.h5')
-        earthquake_model = tf.keras.models.load_model('models/earthquake_prediction_model.h5')
-        flood_model = tf.keras.models.load_model('models/flood_prediction_model.h5')
-        flood_scaler = joblib.load('models/flood_scaler.pkl')
-        heat_scaler = joblib.load('models/heat_scaler.pkl')
-        earthquake_scaler = joblib.load('models/earthquake_scaler.pkl')
-        models_loaded = True
-        print("SUCCESS: Models loaded successfully")
-    except Exception as e:
-        print(f"ERROR: Error loading models: {e}")
-        models_loaded = False
-else:
-    print("WARNING: TensorFlow not available - models cannot be loaded")
+try:
+    flood_model = joblib.load('models/flood_model.pkl')
+    earthquake_model = joblib.load('models/earthquake_model.pkl')
+    heat_model = joblib.load('models/heatwave_model.pkl')
+    flood_scaler = joblib.load('models/flood_scaler.pkl')
+    heat_scaler = joblib.load('models/heatwave_scaler.pkl')
+    earthquake_scaler = joblib.load('models/earthquake_scaler.pkl')
+    models_loaded = True
+    print("SUCCESS: Models loaded successfully")
+except Exception as e:
+    print(f"ERROR: Error loading models: {e}")
+    models_loaded = False
 
 # Load city coordinates and helplines
 with open('data/city_coordinates.json') as f:
     CITY_COORDINATES = json.load(f)
-    
+
 with open('data/emergency_helplines.json') as f:
     EMERGENCY_HELPLINES = json.load(f)
 
@@ -265,26 +254,13 @@ def generate_alert_pdf(disaster_type, severity, location, data):
 def home():
     return render_template('index.html', cities=list(CITY_COORDINATES.keys()))
 
-# Prediction endpoint with earthquake support
+# Prediction endpoint with validation and feature engineering
 @app.route('/predict', methods=['POST'])
 def predict():
-    if not TENSORFLOW_AVAILABLE:
-        return render_template('result.html', 
-                              error=True,
-                              error_message="TensorFlow is not installed. Please install Python 3.11 or 3.12 and TensorFlow. See TENSORFLOW_SETUP.md for instructions.",
-                              disaster_type=request.form.get('disaster', 'Unknown').title(),
-                              city=request.form.get('city', 'Unknown'),
-                              risk_detected=False,
-                              prediction=0.0,
-                              alerts=None,
-                              severity=None,
-                              pdf_path=None,
-                              input_data={})
-    
     if not models_loaded:
         return render_template('result.html',
                               error=True,
-                              error_message="Models could not be loaded. Please check that all model files exist in the models/ directory.",
+                              error_message="Models could not be loaded. Please run train_models.py first.",
                               disaster_type=request.form.get('disaster', 'Unknown').title(),
                               city=request.form.get('city', 'Unknown'),
                               risk_detected=False,
@@ -293,176 +269,322 @@ def predict():
                               severity=None,
                               pdf_path=None,
                               input_data={})
-    
-    # Get form data
+
     disaster_type = request.form['disaster']
     city = request.form['city']
     generate_pdf = 'pdf' in request.form
-    pdf_path = None
-    alerts = None
-    severity = None
-    
+
+    # FLOOD PREDICTION
     if disaster_type == 'flood':
-        # Get flood parameters
         rainfall = float(request.form.get('rainfall', 100.0))
         river_level = float(request.form.get('river_level', 5.0))
         soil_moisture = float(request.form.get('soil_moisture', 50.0))
-        
-        # Prepare input
-        input_data = np.array([[rainfall, river_level, soil_moisture]])
+
+        # Validate inputs
+        valid, error_msg = validate_flood_inputs(rainfall, river_level, soil_moisture)
+        if not valid:
+            return render_template('result.html',
+                                  error=True,
+                                  error_message=f"Invalid environmental conditions detected. {error_msg}",
+                                  disaster_type='Flood',
+                                  city=city,
+                                  risk_detected=False,
+                                  prediction=0.0,
+                                  alerts=None,
+                                  severity=None,
+                                  pdf_path=None,
+                                  input_data={'rainfall': rainfall, 'river_level': river_level, 'soil_moisture': soil_moisture})
+
+        # Feature engineering
+        features = engineer_flood_features(rainfall, river_level, soil_moisture)
+        input_data = np.array([features])
         scaled_input = flood_scaler.transform(input_data)
-        
+
         # Predict
-        prediction = flood_model.predict(scaled_input)[0][0]
-        
-        # Determine severity
-        if prediction > 0.8:
-            severity = 'high'
-        elif prediction > 0.5:
-            severity = 'medium'
+        prediction_prob = flood_model.predict_proba(scaled_input)[0][1]  # Probability of flood (class 1)
+        prediction_prob = max(0.0, min(prediction_prob, 1.0))
+
+        # Rule-based risk score (multi-factor) and explanation
+        rule_risk_percentage, explanation = calculate_flood_risk(rainfall, river_level, soil_moisture)
+
+        # Combine ML probability and rule-based score to reduce single-variable extremes
+        combined_prob = (prediction_prob + (rule_risk_percentage / 100.0)) / 2.0
+        risk_probability = round(max(0.0, min(combined_prob, 1.0)) * 100, 2)
+
+        # Determine risk level (LOW / MODERATE / HIGH)
+        if risk_probability < 40:
+            risk_level = "low"
+        elif risk_probability < 70:
+            risk_level = "medium"
         else:
-            severity = 'low'
-        
-        # Only show alerts if significant risk
-        if prediction > 0.3:
-            risk_detected = True
-            alerts = generate_alert('flood', severity, city)
-            
-            # Generate PDF if requested
-            if generate_pdf:
-                data = {
-                    'rainfall': rainfall,
-                    'river_level': river_level,
-                    'soil_moisture': soil_moisture
-                }
-                pdf_path = generate_alert_pdf('flood', severity, city, data)
+            risk_level = "high"
+
+        # Determine bar style
+        progress_width = f"{risk_probability}%"
+        if risk_level == "low":
+            progress_color = "bg-success"
+        elif risk_level == "medium":
+            progress_color = "bg-warning"
         else:
-            risk_detected = False
-        
-        return render_template('result.html', 
-                              risk_detected=risk_detected,
-                              prediction=prediction,
+            progress_color = "bg-danger"
+
+        print("ML Predicted Probability:", prediction_prob)
+        print("Rule-based Risk Percentage:", rule_risk_percentage)
+        print("Combined Risk Percentage:", risk_probability)
+
+        recommendation = "Stay informed and have emergency supplies ready."
+        if risk_level == "medium":
+            recommendation = "Prepare emergency supplies and monitor situation closely."
+        elif risk_level == "high":
+            recommendation = "Move to higher ground and follow evacuation alerts immediately."
+
+        alerts = {
+            'government': f"Flood risk in {city}: {risk_level.upper()} - {explanation}",
+            'ngo': f"Flood risk in {city}: {risk_level.upper()} - Prepare relief operations",
+            'public': f"Flood risk in {city}: {risk_level.upper()} - {recommendation}"
+        } if risk_probability >= 40 else None
+
+        pdf_path = None
+        if generate_pdf and risk_probability >= 40:
+            data = {'rainfall': rainfall, 'river_level': river_level, 'soil_moisture': soil_moisture}
+            pdf_path = generate_alert_pdf('flood', risk_level, city, data)
+
+        return render_template('result.html',
+                              risk_detected=(risk_probability >= 40),
+                              risk_probability=risk_probability,
+                              risk_percentage=risk_probability,
+                              risk_level=risk_level,
+                              progress_width=progress_width,
+                              progress_color=progress_color,
                               alerts=alerts,
-                              severity=severity,
+                              severity=risk_level,
                               disaster_type='Flood',
                               pdf_path=pdf_path,
                               city=city,
-                              input_data={
-                                  'rainfall': rainfall,
-                                  'river_level': river_level,
-                                  'soil_moisture': soil_moisture
-                              })
-    
-    elif disaster_type == 'heatwave':
-        # Get heatwave parameters
-        max_temp = float(request.form.get('max_temp', 35.0))
-        humidity = float(request.form.get('humidity', 50.0))
-        hot_days = int(request.form.get('hot_days', 3))
-        
-        # Prepare input
-        input_data = np.array([[max_temp, humidity, hot_days]])
-        scaled_input = heat_scaler.transform(input_data)
-        
-        # Predict
-        prediction = heat_model.predict(scaled_input)[0][0]
-        
-        # Determine severity
-        if prediction > 0.8:
-            severity = 'high'
-        elif prediction > 0.5:
-            severity = 'medium'
-        else:
-            severity = 'low'
-        
-        # Only show alerts if significant risk
-        if prediction > 0.3:
-            risk_detected = True
-            alerts = generate_alert('heatwave', severity, city)
-            
-            # Generate PDF if requested
-            if generate_pdf:
-                data = {
-                    'max_temp': max_temp,
-                    'humidity': humidity,
-                    'consecutive_hot_days': hot_days
-                }
-                pdf_path = generate_alert_pdf('heatwave', severity, city, data)
-        else:
-            risk_detected = False
-        
-        return render_template('result.html', 
-                              risk_detected=risk_detected,
-                              prediction=prediction,
-                              alerts=alerts,
-                              severity=severity,
-                              disaster_type='Heat Wave',
-                              pdf_path=pdf_path,
-                              city=city,
-                              input_data={
-                                  'max_temp': max_temp,
-                                  'humidity': humidity,
-                                  'hot_days': hot_days
-                              })
-    
+                              input_data={'rainfall': rainfall, 'river_level': river_level, 'soil_moisture': soil_moisture})
+
+    # EARTHQUAKE PREDICTION
     elif disaster_type == 'earthquake':
-        # Get earthquake parameters
         seismic_activity = float(request.form.get('seismic_activity', 2.5))
         ground_displacement = float(request.form.get('ground_displacement', 0.5))
         fault_distance = float(request.form.get('fault_distance', 10.0))
         previous_earthquakes = int(request.form.get('previous_earthquakes', 2))
-        
-        # Prepare input
-        input_data = np.array([[seismic_activity, ground_displacement, fault_distance, previous_earthquakes]])
+
+        # Validate inputs
+        valid, error_msg = validate_earthquake_inputs(seismic_activity, ground_displacement, fault_distance, previous_earthquakes)
+        if not valid:
+            return render_template('result.html',
+                                  error=True,
+                                  error_message=f"Invalid environmental conditions detected. {error_msg}",
+                                  disaster_type='Earthquake',
+                                  city=city,
+                                  risk_detected=False,
+                                  prediction=0.0,
+                                  alerts=None,
+                                  severity=None,
+                                  pdf_path=None,
+                                  input_data={'seismic_activity': seismic_activity, 'ground_displacement': ground_displacement,
+                                             'fault_distance': fault_distance, 'previous_earthquakes': previous_earthquakes})
+
+        # Feature engineering
+        features = engineer_earthquake_features(seismic_activity, ground_displacement, fault_distance, previous_earthquakes)
+        print("Input features:", features)
+        input_data = np.array([features])
         scaled_input = earthquake_scaler.transform(input_data)
-        
-        # Predict
-        prediction = earthquake_model.predict(scaled_input)[0][0]
-        
-        # Determine severity and estimated magnitude
-        if prediction > 0.8:
-            severity = 'high'
-            estimated_magnitude = 6.0 + (prediction - 0.8) * 10  # Scale to magnitude
-        elif prediction > 0.5:
-            severity = 'medium'
-            estimated_magnitude = 4.5 + (prediction - 0.5) * 5
+
+        # Predict class (0=LOW, 1=MEDIUM, 2=HIGH)
+        prediction_class = earthquake_model.predict(scaled_input)[0]
+
+        # Map model prediction to risk level and probability
+        if prediction_class == 0:
+            ml_risk_level = "low"
+            ml_probability = 25.0
+        elif prediction_class == 1:
+            ml_risk_level = "medium"
+            ml_probability = 55.0
+        else:  # prediction_class == 2
+            ml_risk_level = "high"
+            ml_probability = 85.0
+
+        # Rule-based risk score (multi-factor) and explanation
+        rule_risk_percentage, rule_explanation = calculate_earthquake_risk(
+            seismic_activity, ground_displacement, fault_distance, previous_earthquakes)
+
+        # Determine rule-based risk level
+        if rule_risk_percentage >= 70:
+            rule_risk_level = "high"
+        elif rule_risk_percentage >= 40:
+            rule_risk_level = "medium"
         else:
-            severity = 'low'
-            estimated_magnitude = 3.0 + prediction * 3
-        
-        # Only show alerts if significant risk
-        if prediction > 0.3:
-            risk_detected = True
-            alerts = generate_alert('earthquake', severity, city)
-            
-            # Generate PDF if requested
-            if generate_pdf:
-                data = {
-                    'seismic_activity': seismic_activity,
-                    'ground_displacement': ground_displacement,
-                    'fault_distance': fault_distance,
-                    'previous_earthquakes': previous_earthquakes,
-                    'magnitude': estimated_magnitude
-                }
-                pdf_path = generate_alert_pdf('earthquake', severity, city, data)
+            rule_risk_level = "low"
+
+        # Use ML prediction as primary, but escalate if rule-based indicates higher risk
+        risk_level_order = {"low": 0, "medium": 1, "high": 2}
+        ml_level_num = risk_level_order[ml_risk_level]
+        rule_level_num = risk_level_order[rule_risk_level]
+
+        if rule_level_num > ml_level_num:
+            # Rule-based indicates higher risk, use rule-based
+            risk_level = rule_risk_level
+            risk_probability = rule_risk_percentage
+            explanation = rule_explanation
         else:
-            risk_detected = False
-        
-        return render_template('result.html', 
-                              risk_detected=risk_detected,
-                              prediction=prediction,
+            # Use ML prediction
+            risk_level = ml_risk_level
+            risk_probability = ml_probability
+            explanation = rule_explanation  # Still use rule-based explanation
+
+        # Determine bar style
+        progress_width = f"{risk_probability}%"
+        if risk_level == "low":
+            progress_color = "bg-success"
+        elif risk_level == "medium":
+            progress_color = "bg-warning"
+        else:
+            progress_color = "bg-danger"
+
+        print("ML Predicted Class:", prediction_class, f"({ml_risk_level})")
+        print("ML Probability:", ml_probability)
+        print("Rule-based Risk Percentage:", rule_risk_percentage)
+        print("Combined Risk Percentage:", risk_probability)
+
+        recommendation = "Review earthquake preparedness and safety procedures."
+        if risk_level == "medium":
+            recommendation = "Review earthquake safety plans and secure loose items."
+        elif risk_level == "high":
+            recommendation = "Secure heavy objects, identify safe spots, and be ready to Drop, Cover, and Hold On."
+
+        alerts = {
+            'government': f"Earthquake risk in {city}: {risk_level.upper()} - {explanation}",
+            'ngo': f"Earthquake risk in {city}: {risk_level.upper()} - Prepare emergency response",
+            'public': f"Earthquake risk in {city}: {risk_level.upper()} - {recommendation}"
+        } if risk_probability >= 40 else None
+
+        pdf_path = None
+        if generate_pdf and risk_probability >= 40:
+            data = {'seismic_activity': seismic_activity, 'ground_displacement': ground_displacement,
+                   'fault_distance': fault_distance, 'previous_earthquakes': previous_earthquakes, 'magnitude': 3.0 + (risk_probability / 100.0) * 3}
+            pdf_path = generate_alert_pdf('earthquake', risk_level, city, data)
+
+        return render_template('result.html',
+                              risk_detected=(risk_probability >= 40),
+                              risk_probability=risk_probability,
+                              risk_percentage=risk_probability,
+                              risk_level=risk_level,
+                              progress_width=progress_width,
+                              progress_color=progress_color,
                               alerts=alerts,
-                              severity=severity,
+                              severity=risk_level,
                               disaster_type='Earthquake',
                               pdf_path=pdf_path,
                               city=city,
-                              input_data={
-                                  'seismic_activity': seismic_activity,
-                                  'ground_displacement': ground_displacement,
-                                  'fault_distance': fault_distance,
-                                  'previous_earthquakes': previous_earthquakes,
-                                  'estimated_magnitude': f"{estimated_magnitude:.1f}"
-                              })
-    
+                              input_data={'seismic_activity': seismic_activity, 'ground_displacement': ground_displacement,
+                                         'fault_distance': fault_distance, 'previous_earthquakes': previous_earthquakes})
+
+    # HEATWAVE PREDICTION
+    elif disaster_type == 'heatwave':
+        max_temp = float(request.form.get('max_temp', 35.0))
+        min_temp = float(request.form.get('min_temp', 25.0))
+        humidity = float(request.form.get('humidity', 50.0))
+        wind_speed = float(request.form.get('wind_speed', 10.0))
+
+        # Validate inputs
+        valid, error_msg = validate_heatwave_inputs(max_temp, min_temp, humidity, wind_speed)
+        if not valid:
+            return render_template('result.html',
+                                  error=True,
+                                  error_message=f"Invalid environmental conditions detected. {error_msg}",
+                                  disaster_type='Heat Wave',
+                                  city=city,
+                                  risk_detected=False,
+                                  prediction=0.0,
+                                  alerts=None,
+                                  severity=None,
+                                  pdf_path=None,
+                                  input_data={'max_temp': max_temp, 'min_temp': min_temp, 'humidity': humidity, 'wind_speed': wind_speed})
+
+        # Feature engineering
+        features = engineer_heatwave_features(max_temp, min_temp, humidity, wind_speed)
+        input_data = np.array([features])
+        scaled_input = heat_scaler.transform(input_data)
+
+        # Predict using multi-class model
+        prediction = heat_model.predict(scaled_input)[0]  # 0=LOW, 1=MEDIUM, 2=HIGH
+        prediction_prob = heat_model.predict_proba(scaled_input)[0]
+
+        print("Input features:", features)
+        print("Model prediction (class):", prediction)
+        print("Prediction probabilities:", prediction_prob)
+
+        # Map prediction to risk level and percentage
+        if prediction == 2:
+            risk_level = "high"
+            risk_probability = round(prediction_prob[2] * 100, 2)
+        elif prediction == 1:
+            risk_level = "medium"
+            risk_probability = round(prediction_prob[1] * 100, 2)
+        else:
+            risk_level = "low"
+            risk_probability = round(prediction_prob[0] * 100, 2)
+
+        # Rule-based risk score (multi-factor) and explanation
+        rule_risk_percentage, explanation = calculate_heatwave_risk(max_temp, min_temp, humidity, wind_speed)
+
+        # Combine ML prediction confidence with rule-based score
+        combined_prob = (risk_probability + rule_risk_percentage) / 200.0  # Normalize to 0-1
+        risk_probability = round(max(0.0, min(combined_prob, 1.0)) * 100, 2)
+
+        # Ensure risk level matches combined score
+        if risk_probability >= 70:
+            risk_level = "high"
+        elif risk_probability >= 40:
+            risk_level = "medium"
+        else:
+            risk_level = "low"
+
+        # Determine bar style
+        progress_width = f"{risk_probability}%"
+        if risk_level == "low":
+            progress_color = "bg-success"
+        elif risk_level == "medium":
+            progress_color = "bg-warning"
+        else:
+            progress_color = "bg-danger"
+
+        print("Final Risk Level:", risk_level)
+        print("Final Risk Percentage:", risk_probability)
+
+        recommendation = "Stay hydrated and take breaks from the heat."
+        if risk_level == "medium":
+            recommendation = "Limit outdoor activities, stay hydrated, and check on vulnerable neighbors."
+        elif risk_level == "high":
+            recommendation = "Stay indoors in air-conditioned environments, drink plenty of water, and seek cool areas."
+
+        alerts = {
+            'government': f"Heatwave risk in {city}: {risk_level.upper()} - {explanation}",
+            'ngo': f"Heatwave risk in {city}: {risk_level.upper()} - Prepare cooling stations and water distribution",
+            'public': f"Heatwave risk in {city}: {risk_level.upper()} - {recommendation}"
+        } if risk_probability >= 40 else None
+
+        pdf_path = None
+        if generate_pdf and risk_probability >= 40:
+            data = {'max_temp': max_temp, 'humidity': humidity, 'consecutive_hot_days': 1}
+            pdf_path = generate_alert_pdf('heatwave', risk_level, city, data)
+
+        return render_template('result.html',
+                              risk_detected=(risk_probability >= 40),
+                              risk_probability=risk_probability,
+                              risk_percentage=risk_probability,
+                              risk_level=risk_level,
+                              progress_width=progress_width,
+                              progress_color=progress_color,
+                              alerts=alerts,
+                              severity=risk_level,
+                              disaster_type='Heat Wave',
+                              pdf_path=pdf_path,
+                              city=city,
+                              input_data={'max_temp': max_temp, 'min_temp': min_temp, 'humidity': humidity, 'wind_speed': wind_speed})
+
     return "Invalid disaster type", 400
 
 # PDF download endpoint

@@ -144,30 +144,23 @@
             border-radius: 10px;
             overflow: hidden;
             margin: 10px 0;
+            display: flex;
         }
-        
-        .probability-fill {
-            height: 100%;
-            border-radius: 10px;
+
+        .probability-meter .progress-bar {
             transition: width 0.5s ease;
         }
-        
-        .probability-high {
-            background: linear-gradient(90deg, #ff6b6b 0%, #ee5a52 100%);
-        }
-        
-        .probability-medium {
-            background: linear-gradient(90deg, #ffd43b 0%, #fab005 100%);
-        }
-        
+
         .probability-low {
             background: linear-gradient(90deg, #51cf66 0%, #40c057 100%);
         }
-        
-        .title-section {
-            text-align: center;
-            margin-bottom: 30px;
-            padding: 20px;
+
+        .probability-medium {
+            background: linear-gradient(90deg, #ffd43b 0%, #fab005 100%);
+        }
+
+        .probability-high {
+            background: linear-gradient(90deg, #ff6b6b 0%, #ee5a52 100%);
         }
         
         .title-section h1 {
@@ -240,7 +233,7 @@
                             <i class="fas fa-exclamation-triangle"></i>
                             {{ severity|upper }} {{ disaster_type|upper }} ALERT!
                         </h2>
-                        <p class="mb-0">Risk probability: {{ (prediction * 100)|round(1) }}%</p>
+                        <p class="mb-0">Risk probability: {{ risk_percentage }}%</p>
                     </div>
                     <div class="text-end">
                         <span class="badge severity-{{ severity }} fs-6">{{ severity|upper }} RISK</span>
@@ -248,7 +241,9 @@
                 </div>
                 
                 <div class="probability-meter">
-                    <div class="probability-fill probability-{{ severity }}" id="probabilityBar" data-width="{{ (prediction * 100)|round(1) }}"></div>
+                    <div class="progress-bar {{ progress_color }}" id="probabilityBar" role="progressbar" style="width: {{ progress_width }}" aria-valuenow="{{ risk_percentage }}" aria-valuemin="0" aria-valuemax="100" data-width="{{ progress_width }}">
+                        {{ risk_percentage }}%
+                    </div>
                 </div>
             </div>
             
@@ -299,7 +294,7 @@
                             <i class="fas fa-check-circle"></i>
                             No Significant Risk Detected
                         </h2>
-                        <p class="mb-0">Risk probability: {{ (prediction * 100)|round(1) }}%</p>
+                        <p class="mb-0">Risk probability: {{ risk_percentage }}%</p>
                     </div>
                     <div class="text-end">
                         <span class="badge bg-success fs-6">SAFE</span>
@@ -307,7 +302,9 @@
                 </div>
                 
                 <div class="probability-meter">
-                    <div class="probability-fill probability-low" id="probabilityBar" data-width="{{ (prediction * 100)|round(1) }}"></div>
+                    <div class="progress-bar bg-success" id="probabilityBar" role="progressbar" style="width: {{ progress_width }}" aria-valuenow="{{ risk_percentage }}" aria-valuemin="0" aria-valuemax="100" data-width="{{ progress_width }}">
+                        {{ risk_percentage }}%
+                    </div>
                 </div>
             </div>
             {% endif %}
@@ -391,7 +388,7 @@
         document.addEventListener('DOMContentLoaded', function() {
             const probabilityFill = document.getElementById('probabilityBar');
             if (probabilityFill) {
-                const targetWidth = probabilityFill.dataset.width + '%';
+                const targetWidth = probabilityFill.dataset.width;
                 probabilityFill.style.width = '0%';
                 setTimeout(function() {
                     probabilityFill.style.width = targetWidth;

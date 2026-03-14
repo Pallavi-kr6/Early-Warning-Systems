@@ -197,7 +197,7 @@
                     </h4>
                     
                     <div class="row">
-                        <div class="col-md-4 mb-3">
+                        <div class="col-md-3 mb-3">
                             <label class="form-label">Max Temperature (°C)</label>
                             <div class="input-group">
                                 <span class="input-group-text"><i class="fas fa-temperature-high"></i></span>
@@ -206,7 +206,16 @@
                             <div class="parameter-description">Maximum expected temperature in Celsius</div>
                         </div>
                         
-                        <div class="col-md-4 mb-3">
+                        <div class="col-md-3 mb-3">
+                            <label class="form-label">Min Temperature (°C)</label>
+                            <div class="input-group">
+                                <span class="input-group-text"><i class="fas fa-temperature-low"></i></span>
+                                <input type="number" class="form-control" name="min_temp" step="0.1" value="25.0" required>
+                            </div>
+                            <div class="parameter-description">Minimum temperature in Celsius</div>
+                        </div>
+                        
+                        <div class="col-md-3 mb-3">
                             <label class="form-label">Humidity (%)</label>
                             <div class="input-group">
                                 <span class="input-group-text"><i class="fas fa-eye-dropper"></i></span>
@@ -215,13 +224,13 @@
                             <div class="parameter-description">Relative humidity percentage</div>
                         </div>
                         
-                        <div class="col-md-4 mb-3">
-                            <label class="form-label">Consecutive Hot Days</label>
+                        <div class="col-md-3 mb-3">
+                            <label class="form-label">Wind Speed (km/h)</label>
                             <div class="input-group">
-                                <span class="input-group-text"><i class="fas fa-calendar-alt"></i></span>
-                                <input type="number" class="form-control" name="hot_days" min="0" value="3" required>
+                                <span class="input-group-text"><i class="fas fa-wind"></i></span>
+                                <input type="number" class="form-control" name="wind_speed" step="0.1" value="10.0" required>
                             </div>
-                            <div class="parameter-description">Number of consecutive hot days</div>
+                            <div class="parameter-description">Wind speed in kilometers per hour</div>
                         </div>
                     </div>
                 </div>
